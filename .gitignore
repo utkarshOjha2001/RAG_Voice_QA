@@ -1,0 +1,47 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Temporary files
+tmp/
+*.tmp
+*.temp
+
+# Database files
+chroma_db/
+
+# Environment variables
+.env
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Audio files (temporary voice recordings)
+*.mp3
+*.wav
+*.ogg
+
+# Local development files
+local_settings.py
+*.sqlite3 
