@@ -16,13 +16,14 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 from langchain_google_genai import ChatGoogleGenerativeAI
+import time
 
-# Setup temp directory
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 custom_tmp = os.path.join(os.getcwd(), "tmp")
 os.makedirs(custom_tmp, exist_ok=True)
 tempfile.tempdir = custom_tmp
 
-# Load .env
 load_dotenv()
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not GOOGLE_API_KEY:
@@ -43,6 +44,31 @@ trainData = (
     "Use only the text content from the document provided. "
     "If you don't know the answer, say 'I don't know'."
 )
+
+def custom_spinner(text="Processing..."):
+    """Creates a custom spinner with blur effect"""
+    spinner_html = f"""
+        <div class="custom-spinner-overlay">
+            <div class="spinner-container">
+                <div class="custom-spinner"></div>
+                <div class="spinner-inner"></div>
+                <div class="spinner-text">{text}</div>
+            </div>
+        </div>
+    """
+    spinner_placeholder = st.empty()
+    return spinner_placeholder, spinner_html
+
+def simple_spinner(text="Processing..."):
+    """Creates a simple spinner without blur effect"""
+    spinner_html = f"""
+        <div class="simple-spinner-container">
+            <div class="simple-spinner"></div>
+            <div class="spinner-text">{text}</div>
+        </div>
+    """
+    spinner_placeholder = st.empty()
+    return spinner_placeholder, spinner_html
 
 # Voice Output
 def text_to_speech(text):
@@ -65,9 +91,10 @@ def speech_to_text():
             return recognizer.recognize_google(audio)
         except Exception as e:
             st.error(f"Speech recognition error: {str(e)}")
+            if st.button("🔄 Try Again", key="retry_button"):
+                return speech_to_text()
             return None
 
-# Document Processing
 def process_document(file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp_file:
         tmp_file.write(file.getvalue())
@@ -86,7 +113,6 @@ def process_document(file):
     finally:
         os.unlink(tmp_file_path)
 
-# QA Chain with system prompt
 def get_qa_chain(vectorstore):
     try:
         llm = ChatGoogleGenerativeAI(
@@ -110,12 +136,10 @@ def get_qa_chain(vectorstore):
         st.error(f"Error creating QA chain: {str(e)}")
         return None
 
-# Load CSS from external file
 def load_css():
     with open('static/style.css') as f:
         st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
-# Streamlit UI Config
 st.set_page_config(
     page_title="Voice RAG Assistant",
     page_icon="🎧",
@@ -123,13 +147,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Load external CSS
 load_css()
 
-# Main UI Container
 st.markdown('<div class="main-container">', unsafe_allow_html=True)
 
-# Header Section
 st.markdown("""
     <h1 class="app-title">🎧 Voice-Based RAG Assistant</h1>
     <p class="app-description">Your intelligent voice companion for document interaction. Upload a document and start a conversation!</p>
@@ -143,39 +164,59 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# File uploader
-uploaded_file = st.file_uploader("Choose a PDF or TXT file", type=['pdf', 'txt'])
-if uploaded_file:
-    with st.spinner("Processing document..."):
-        st.session_state.vectorstore = process_document(uploaded_file)
-        if st.session_state.vectorstore:
-            st.markdown('<div class="success">✨ Document processed successfully! Ready for your questions.</div>', unsafe_allow_html=True)
-
-# Session State Setup
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'vectorstore' not in st.session_state:
     st.session_state.vectorstore = None
+if 'document_processed' not in st.session_state:
+    st.session_state.document_processed = False
 
-# QA Flow
-if st.session_state.vectorstore:
-    # Voice Interaction Section
+persist_dir = "./chroma_db"
+if st.session_state.vectorstore is None and os.path.exists(persist_dir):
+    try:
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        st.session_state.vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
+        st.session_state.document_processed = True
+    except Exception as e:
+        st.error(f"Failed to load existing vectorstore: {str(e)}")
+
+
+uploaded_file = st.file_uploader("Choose a PDF or TXT file", type=['pdf', 'txt'])
+
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'vectorstore' not in st.session_state:
+    st.session_state.vectorstore = None
+if 'document_processed' not in st.session_state:
+    st.session_state.document_processed = False
+
+if uploaded_file and not st.session_state.document_processed and not os.path.exists(persist_dir):
+    spinner_placeholder, spinner_html = custom_spinner("Processing document...")
+    spinner_placeholder.markdown(spinner_html, unsafe_allow_html=True)
+    try:
+        st.session_state.vectorstore = process_document(uploaded_file)
+        if st.session_state.vectorstore:
+            st.session_state.document_processed = True
+            st.markdown('<div class="success">✨ Document processed successfully! Ready for your questions.</div>', unsafe_allow_html=True)
+    finally:
+        spinner_placeholder.empty()
+
+if st.session_state.vectorstore and st.session_state.document_processed:
     st.markdown("""
         <div class="card">
             <h2 class="section-header">🎙️ Voice Interaction</h2>
             <p class="interaction-description">Click the button below and speak your question clearly.</p>
-            <div class="voice-button-container">
-                <img src="assets/microphone.svg" alt="Microphone" class="mic-icon" />
-            </div>
-        </div>
+            <div class="button-container">
     """, unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        if st.button("Start Voice Query", type="primary", key="voice_button"):
+        if st.button(" Start Voice Query ", type="primary", key="voice_button"):
             question = speech_to_text()
             if question:
                 st.session_state.last_question = question
+    
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
     if 'last_question' in st.session_state:
         question = st.session_state.last_question
@@ -183,14 +224,13 @@ if st.session_state.vectorstore:
         if qa_chain:
             with st.spinner("🤔 Processing your question..."):
                 result = qa_chain({"question": question, "chat_history": st.session_state.chat_history})
-            answer = result["answer"]
-            text_to_speech(answer)
-            st.session_state.chat_history.append((question, answer))
+                answer = result["answer"]
+                text_to_speech(answer)
+                st.session_state.chat_history.append((question, answer))
 
-    # Chat History Section
     if st.session_state.chat_history:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<h2 class="section-header">📜 Conversation History</h2>', unsafe_allow_html=True)
+        st.markdown('<div class="card1">', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-header">Conversation History</h2>', unsafe_allow_html=True)
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
         
         for q, a in st.session_state.chat_history:
@@ -209,7 +249,6 @@ if st.session_state.vectorstore:
         
         st.markdown('</div></div>', unsafe_allow_html=True)
 else:
-    # Welcome Message
     st.markdown("""
         <div class="info-message">
             <h3 class="welc-header">👋 Welcome!</h3>
@@ -218,5 +257,4 @@ else:
         </div>
     """, unsafe_allow_html=True)
 
-# Close main container
 st.markdown('</div>', unsafe_allow_html=True)
