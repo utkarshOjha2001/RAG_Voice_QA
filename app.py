@@ -1,22 +1,18 @@
 import streamlit as st
+import pyttsx3
 import re
-import subprocess
 import os
 import tempfile
 from dotenv import load_dotenv
 import speech_recognition as sr
-from gtts import gTTS
-from langchain.prompts import PromptTemplate
-from playsound import playsound  
+from langchain.prompts import PromptTemplate  
 import google.generativeai as genai
-from datetime import datetime
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 from langchain_google_genai import ChatGoogleGenerativeAI
-import time
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -40,9 +36,10 @@ except Exception as e:
 # Globals
 recognizer = sr.Recognizer()
 trainData = (
-    "Remember: Do not include any punctuation or special characters in your responses. "
-    "Use only the text content from the document provided. "
+    "Your task is to ask the questions based on the document provided by the user. "
+    "You are a voice-based RAG assistant that can ask or if asked should answer questions based on the document provided. "
     "If you don't know the answer, say 'I don't know'."
+
 )
 
 def custom_spinner(text="Processing..."):
@@ -71,18 +68,19 @@ def simple_spinner(text="Processing..."):
     return spinner_placeholder, spinner_html
 
 # Voice Output
+# Voice Output
 def text_to_speech(text):
-    # Clean text a bit
     cleaned_text = re.sub(r"[\*\–\-\(\)\[\]\{\}:;]", "", text)
     cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
-    tts = gTTS(cleaned_text)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-        temp_path = fp.name
-        tts.save(temp_path)
-    playsound(temp_path)
-    os.remove(temp_path)
+    
+    engine = pyttsx3.init()
+    engine.setProperty('rate', 160)  
+    engine.setProperty('volume', 1.0)
+    
+    engine.say(cleaned_text)
+    engine.runAndWait()
 
-# Voice Input
+
 def speech_to_text():
     with sr.Microphone() as source:
         st.toast("Listening...", icon="🎧")
@@ -91,7 +89,7 @@ def speech_to_text():
             return recognizer.recognize_google(audio)
         except Exception as e:
             st.error(f"Speech recognition error: {str(e)}")
-            if st.button("🔄 Try Again", key="retry_button"):
+            if st.button("Try Again", key="retry_button"):
                 return speech_to_text()
             return None
 
@@ -106,7 +104,10 @@ def process_document(file):
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = splitter.split_documents(documents)
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        return Chroma.from_documents(splits, embeddings, persist_directory="./chroma_db")
+        vectorstore = Chroma.from_documents(splits, embeddings, persist_directory="./chroma_db")
+        vectorstore.persist() 
+
+        return vectorstore
     except Exception as e:
         st.error(f"Document processing error: {str(e)}")
         return None
@@ -176,30 +177,27 @@ if st.session_state.vectorstore is None and os.path.exists(persist_dir):
     try:
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         st.session_state.vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
+        st.session_state.qa_chain = get_qa_chain(st.session_state.vectorstore)  # ✅ ADD THIS LINE
         st.session_state.document_processed = True
     except Exception as e:
         st.error(f"Failed to load existing vectorstore: {str(e)}")
 
 
+
 uploaded_file = st.file_uploader("Choose a PDF or TXT file", type=['pdf', 'txt'])
 
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'vectorstore' not in st.session_state:
-    st.session_state.vectorstore = None
-if 'document_processed' not in st.session_state:
-    st.session_state.document_processed = False
-
-if uploaded_file and not st.session_state.document_processed and not os.path.exists(persist_dir):
+if uploaded_file and not st.session_state.document_processed:
     spinner_placeholder, spinner_html = custom_spinner("Processing document...")
     spinner_placeholder.markdown(spinner_html, unsafe_allow_html=True)
     try:
         st.session_state.vectorstore = process_document(uploaded_file)
         if st.session_state.vectorstore:
+            st.session_state.qa_chain = get_qa_chain(st.session_state.vectorstore)  # <--- Store chain
             st.session_state.document_processed = True
             st.markdown('<div class="success">✨ Document processed successfully! Ready for your questions.</div>', unsafe_allow_html=True)
     finally:
         spinner_placeholder.empty()
+
 
 if st.session_state.vectorstore and st.session_state.document_processed:
     st.markdown("""
@@ -220,7 +218,7 @@ if st.session_state.vectorstore and st.session_state.document_processed:
 
     if 'last_question' in st.session_state:
         question = st.session_state.last_question
-        qa_chain = get_qa_chain(st.session_state.vectorstore)
+        qa_chain = st.session_state.qa_chain
         if qa_chain:
             with st.spinner("🤔 Processing your question..."):
                 result = qa_chain({"question": question, "chat_history": st.session_state.chat_history})
